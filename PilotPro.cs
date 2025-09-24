@@ -12,14 +12,14 @@ namespace Oxide.Plugins
 {
     [Info("PilotPro", "Calvin Fletcher", "1.0.0")]
     [Description("Professional minicopter racing with advanced scoring, streaks, and zones")]
-    public class MinicopterSkillRace : RustPlugin
+    public class PilotPro: RustPlugin
     {
         #region Development Mode Constants
         
         // Development mode switches - set to true for development
         private const bool DEV_MODE_RESET_CONFIG = true;  // Rewrite default config on every boot
-        private const bool DEV_MODE_RESET_PLAYER_DATA = false;  // Clear all player data on boot
-        private const bool DEV_MODE_RESET_ZONE_DATA = false;  // Clear all zone data on boot
+        private const bool DEV_MODE_RESET_PLAYER_DATA = true;  // Clear all player data on boot
+        private const bool DEV_MODE_RESET_ZONE_DATA = true;  // Clear all zone data on boot
         
         #endregion
 
@@ -168,7 +168,7 @@ namespace Oxide.Plugins
             public float MaxAltitudeForRiskBonus = 100f; // Above this altitude = base points only
 
             [JsonProperty("Min Altitude For Flip")]
-            public float MinAltitudeForFlip = 2f; // Must be at least this high to attempt flip
+            public float MinAltitudeForFlip = 0f; // Must be at least this high to attempt flip
 
             [JsonProperty("Risk Multiplier Curve")]
             public string RiskMultiplierCurve = "linear"; // "linear" or "exponential"
@@ -449,6 +449,10 @@ namespace Oxide.Plugins
             // Milestone tracking for streak multiplier notifications
             public float LastMultiplierMilestone; // Track the last milestone reached to prevent spam
 
+            // Minicopter tracking - allows streaks to persist when not in minicopter
+            public bool IsInMinicopter; // Currently mounted in a minicopter
+            public Minicopter CurrentMinicopter; // Reference to current minicopter (null when dismounted)
+
             public PlayerFlightData(BasePlayer player, Minicopter minicopter)
             {
                 Player = player;
@@ -502,6 +506,10 @@ namespace Oxide.Plugins
                 
                 // Initialize milestone tracking
                 LastMultiplierMilestone = 1.0f;
+                
+                // Initialize minicopter tracking
+                IsInMinicopter = true; // Player is initially in the minicopter when flight data is created
+                CurrentMinicopter = minicopter;
             }
         }
 
@@ -560,7 +568,7 @@ namespace Oxide.Plugins
             }
 
             // Register permissions
-            permission.RegisterPermission("minicopterskillrace.admin", this);
+            permission.RegisterPermission("pilotpro.admin", this);
 
             Log("Minicopter plugin initialized");
         }
@@ -588,10 +596,22 @@ namespace Oxide.Plugins
 
         private void OnPlayerDisconnected(BasePlayer player)
         {
-            // Clean up if player was being tracked
+            // When player disconnects, finalize their score and end their streak
             if (activePlayers.ContainsKey(player.userID))
             {
-                StopTracking(player);
+                var flightData = activePlayers[player.userID];
+                
+                // Finalize score before ending tracking
+                FinalizeFlightScore(flightData);
+                
+                // End any active streak due to disconnection
+                if (flightData.IsStreakActive)
+                {
+                    ResetStreak(flightData, "Player Disconnected");
+                }
+                
+                // Now stop tracking completely (this is different from dismounting)
+                StopTrackingCompletely(player);
             }
 
             // Destroy flight data UI if enabled
@@ -985,8 +1005,26 @@ namespace Oxide.Plugins
         {
             if (player == null || minicopter == null) return;
 
-            var flightData = new PlayerFlightData(player, minicopter);
-            activePlayers[player.userID] = flightData;
+            // Clean up any lingering UIs from previous flights
+            if (!string.IsNullOrEmpty($"StreakUI_{player.userID}"))
+            {
+                CuiHelper.DestroyUi(player, $"StreakUI_{player.userID}");
+            }
+
+            // Check if player already has active flight data (from previous minicopter session)
+            if (activePlayers.TryGetValue(player.userID, out PlayerFlightData existingData))
+            {
+                // Player is re-mounting - update their minicopter reference and status
+                existingData.IsInMinicopter = true;
+                existingData.CurrentMinicopter = minicopter;
+                existingData.Minicopter = minicopter; // Update the legacy field too
+            }
+            else
+            {
+                // New flight data for player
+                var flightData = new PlayerFlightData(player, minicopter);
+                activePlayers[player.userID] = flightData;
+            }
 
             // Initialize player data if not exists
             var steamId = player.UserIDString;
@@ -996,13 +1034,13 @@ namespace Oxide.Plugins
             }
         }
 
-        private void StopTracking(BasePlayer player)
+        private void StopTrackingCompletely(BasePlayer player)
         {
             if (player == null) return;
 
             if (activePlayers.TryGetValue(player.userID, out PlayerFlightData flightData))
             {
-                // Clean up UIs
+                // Clean up all UIs immediately
                 if (config.Features.EnableFlightDataUI)
                 {
                     DestroyFlightInfoUI(player);
@@ -1012,8 +1050,41 @@ namespace Oxide.Plugins
                 DestroyPersistentStreakUI(player, flightData);
                 DestroyGetLowCountdownUI(player, flightData);
                 DestroySpeedUpCountdownUI(player, flightData);
-                FinalizeFlightScore(flightData);
+                
+                // Remove from tracking completely
                 activePlayers.Remove(player.userID);
+            }
+        }
+
+        private void StopTracking(BasePlayer player)
+        {
+            if (player == null) return;
+
+            if (activePlayers.TryGetValue(player.userID, out PlayerFlightData flightData))
+            {
+                // Clean up immediate UIs that are only relevant while flying
+                if (config.Features.EnableFlightDataUI)
+                {
+                    DestroyFlightInfoUI(player);
+                }
+                
+                DestroyZoneVisualsForPlayer(player);
+                DestroyGetLowCountdownUI(player, flightData);
+                DestroySpeedUpCountdownUI(player, flightData);
+
+                // Mark that player is no longer in a minicopter, but keep their flight data for streak continuity
+                flightData.IsInMinicopter = false;
+                flightData.CurrentMinicopter = null;
+                
+                // Delay streak UI cleanup to allow players to see their final streak info
+                timer.Once(5f, () => 
+                {
+                    // Only destroy streak UI if the player hasn't re-mounted (check if they're back in activePlayers)
+                    if (activePlayers.ContainsKey(player.userID) && !activePlayers[player.userID].IsInMinicopter)
+                    {
+                        DestroyPersistentStreakUI(player, flightData);
+                    }
+                });
             }
         }
 
@@ -1125,13 +1196,10 @@ namespace Oxide.Plugins
                         playerData2.BestStreakPoints = finalNetPoints;
                         SaveData(); // Save the new record
                         
-                        // Notify player of new record (show final net points after penalty)
-                        flightData.Player.ChatMessage($"<color=#00ff00>NEW STREAK RECORD!</color> {finalNetPoints:F0} points");
-                        
-                        // Show floating point notification for high score
+                        // Show floating point notification for new record (no chat message)
                         if (config.PointDisplay.ShowStreakPoints)
                         {
-                            ShowFloatingPoints(flightData.Player, 0f, "major_milestone", "HIGH SCORE!");
+                            ShowFloatingPoints(flightData.Player, 0f, "major_milestone", $"NEW RECORD! {finalNetPoints:F0}pts");
                         }
                     }
                 }
@@ -1178,43 +1246,43 @@ namespace Oxide.Plugins
 
         private void CheckMultiplierMilestones(PlayerFlightData flightData, float currentMultiplier)
         {
-            // Use raw streak duration for milestone checks (when multiplier is actually reached)
+            // Use raw streak duration for display/logging only
             float rawStreakDuration = Time.time - flightData.StreakStartTime;
             float displayDuration = rawStreakDuration + config.StreakStartDurationThreshold; // For display/logging only
             
-            // Check for 2.0x milestone at exactly 60s raw streak time (when multiplier is actually reached)
-            if (rawStreakDuration >= 60f && flightData.LastMultiplierMilestone < 2.0f)
+            // Check for 2.0x milestone when multiplier actually reaches 2.0x
+            if (currentMultiplier >= 2.0f && flightData.LastMultiplierMilestone < 2.0f)
             {
                 flightData.LastMultiplierMilestone = 2.0f;
                 
                 // Show major milestone (no chat message, only floating points)
                 if (config.PointDisplay.ShowStreakPoints)
                 {
-                    ShowFloatingPoints(flightData.Player, 0f, "major_milestone", "2.0x STREAK!");
+                    ShowFloatingPoints(flightData.Player, 0f, "major_milestone", "2.0x STREAK!", true);
                 }
             }
             
-            // Check for 2.5x milestone at exactly 210s raw streak time (when multiplier is actually reached)
-            if (rawStreakDuration >= 210f && flightData.LastMultiplierMilestone < 2.5f)
+            // Check for 2.5x milestone when multiplier actually reaches 2.5x
+            if (currentMultiplier >= 2.5f && flightData.LastMultiplierMilestone < 2.5f)
             {
                 flightData.LastMultiplierMilestone = 2.5f;
                 
                 // Show 2.5x milestone
                 if (config.PointDisplay.ShowStreakPoints)
                 {
-                    ShowFloatingPoints(flightData.Player, 0f, "major_milestone", "2.5x STREAK!");
+                    ShowFloatingPoints(flightData.Player, 0f, "major_milestone", "2.5x STREAK!", true);
                 }
             }
             
-            // Check for 3.0x super streak milestone at exactly 360s raw streak time (when multiplier is actually reached)
-            if (rawStreakDuration >= 360f && flightData.LastMultiplierMilestone < 3.0f)
+            // Check for 3.0x super streak milestone when multiplier actually reaches 3.0x
+            if (currentMultiplier >= 3.0f && flightData.LastMultiplierMilestone < 3.0f)
             {
                 flightData.LastMultiplierMilestone = 3.0f;
                 
                 // Show super streak milestone (no chat message, only floating points)
                 if (config.PointDisplay.ShowStreakPoints)
                 {
-                    ShowFloatingPoints(flightData.Player, 0f, "super_streak", "3.0x SUPER STREAK!");
+                    ShowFloatingPoints(flightData.Player, 0f, "super_streak", "3.0x SUPER STREAK!", true);
                 }
             }
         }
@@ -1361,35 +1429,55 @@ namespace Oxide.Plugins
             foreach (var kvp in activePlayers.ToList())
             {
                 var flightData = kvp.Value;
-                if (flightData?.Player == null || flightData.Minicopter == null || flightData.Minicopter.IsDestroyed)
+                if (flightData?.Player == null)
                 {
-                    // Clean up UI when player stops being tracked
-                    DestroyFlightInfoUI(flightData?.Player);
+                    // Only remove if player is null - keep tracking even if minicopter is null/destroyed
                     activePlayers.Remove(kvp.Key);
                     continue;
                 }
 
-                var prevScore = flightData.CurrentFlightScore;
-                CalculateAndAddScore(flightData);
+                // Check if player is currently in a minicopter
+                bool playerInMinicopter = flightData.IsInMinicopter && 
+                                        flightData.CurrentMinicopter != null && 
+                                        !flightData.CurrentMinicopter.IsDestroyed;
 
-                // Regenerate minicopter health over time (scaled by biome and speed multipliers)
-                var biomeMultiplier = GetBiomeMultiplier(flightData.Player.transform.position);
-                var speed = flightData.Minicopter.GetComponent<Rigidbody>().velocity.magnitude;
-                RegenerateMinicopterHealth(flightData.Minicopter, biomeMultiplier, speed);
+                if (playerInMinicopter)
+                {
+                    // Standard flight scoring when in minicopter
+                    var prevScore = flightData.CurrentFlightScore;
+                    CalculateAndAddScore(flightData);
 
-                // Update flight info UI every tick for real-time data
-                CreateFlightInfoUI(flightData.Player, flightData);
+                    // Regenerate minicopter health over time (scaled by biome and speed multipliers)
+                    var biomeMultiplier = GetBiomeMultiplier(flightData.Player.transform.position);
+                    var speed = flightData.CurrentMinicopter.GetComponent<Rigidbody>().velocity.magnitude;
+                    RegenerateMinicopterHealth(flightData.CurrentMinicopter, biomeMultiplier, speed);
+                    
+                    // Update flight info UI every tick for real-time data
+                    CreateFlightInfoUI(flightData.Player, flightData);
 
-                // Update debug location UI if enabled for this player
+                    // Update leaderboard if score changed significantly
+                    if (flightData.CurrentFlightScore - prevScore > 10f)
+                    {
+                        leaderboardNeedsUpdate = true;
+                    }
+                }
+                else
+                {
+                    // Player is not in minicopter but we keep tracking for streak continuity
+                    // Continue streak timing and UI updates, but don't award new points
+                    // This allows streaks to persist through dismounting
+                    CreatePersistentStreakUI(flightData.Player, flightData); // Keep UI updated
+                    
+                    // Calculate current streak multiplier for milestone checks
+                    float streakDuration = Time.time - flightData.StreakStartTime;
+                    float currentStreakMultiplier = GetStreakMultiplier(streakDuration);
+                    CheckMultiplierMilestones(flightData, currentStreakMultiplier); // Continue milestone checks
+                }
+
+                // Update debug location UI if enabled for this player (whether in minicopter or not)
                 if (activeDebugUIs.ContainsKey(flightData.Player.userID) && activeDebugUIs[flightData.Player.userID])
                 {
                     CreateDebugLocationUI(flightData.Player);
-                }
-
-                // Update leaderboard if score changed significantly
-                if (flightData.CurrentFlightScore - prevScore > 10f)
-                {
-                    leaderboardNeedsUpdate = true;
                 }
             }
 
@@ -1744,6 +1832,15 @@ namespace Oxide.Plugins
                 meetingStreakConditions = (altitudeOK || altitudeForgiven) && (speedOK || speedForgiven);
             }
 
+            // Check for milestone achievements BEFORE evaluating streak-ending conditions
+            // This ensures milestones are detected even if the streak ends in the same tick
+            if (config.Features.EnableStreakSystem && flightData.IsStreakActive)
+            {
+                float streakDuration = Time.time - flightData.StreakStartTime;
+                float currentStreakMultiplier = GetStreakMultiplier(streakDuration);
+                CheckMultiplierMilestones(flightData, currentStreakMultiplier);
+            }
+
             if (config.Features.EnableStreakSystem && !crashCooldownActive)
             {
                 if (meetingStreakConditions)
@@ -1845,15 +1942,11 @@ namespace Oxide.Plugins
             // Add total points to flight score
             float totalPoints = basePoints + zoneBonus;
 
-            // Apply streak multiplier and check for milestones
+            // Apply streak multiplier (milestone check already done earlier)
             if (config.Features.EnableStreakSystem && flightData.IsStreakActive)
             {
                 float streakDuration = Time.time - flightData.StreakStartTime;
                 float currentStreakMultiplier = GetStreakMultiplier(streakDuration);
-
-                // Check for milestone achievements and show floating points
-                CheckMultiplierMilestones(flightData, currentStreakMultiplier);
-
                 totalPoints *= currentStreakMultiplier;
             }
 
@@ -2248,7 +2341,7 @@ namespace Oxide.Plugins
                     break;
 
                 case "reset":
-                    if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+                    if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
                     {
                         ResetAllData(player);
                     }
@@ -2259,7 +2352,7 @@ namespace Oxide.Plugins
                     break;
 
                 case "removeplayer":
-                    if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+                    if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
                     {
                         HandleRemovePlayer(player, args);
                     }
@@ -2280,7 +2373,7 @@ namespace Oxide.Plugins
                     break;
 
                 case "zonecreate":
-                    if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+                    if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
                     {
                         HandleZoneCreate(player, args);
                     }
@@ -2291,7 +2384,7 @@ namespace Oxide.Plugins
                     break;
 
                 case "zonedelete":
-                    if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+                    if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
                     {
                         HandleZoneDelete(player, args);
                     }
@@ -2302,7 +2395,7 @@ namespace Oxide.Plugins
                     break;
 
                 case "zonelist":
-                    if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+                    if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
                     {
                         HandleZoneList(player);
                     }
@@ -2313,7 +2406,7 @@ namespace Oxide.Plugins
                     break;
 
                 case "zonetp":
-                    if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+                    if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
                     {
                         HandleZoneTeleport(player, args);
                     }
@@ -2324,7 +2417,7 @@ namespace Oxide.Plugins
                     break;
 
                 case "clearallminis":
-                    if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+                    if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
                     {
                         ClearAllMinicopters(player);
                     }
@@ -2335,7 +2428,7 @@ namespace Oxide.Plugins
                     break;
 
                 case "toggleflightui":
-                    if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+                    if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
                     {
                         config.Features.EnableFlightDataUI = !config.Features.EnableFlightDataUI;
                         SaveConfig();
@@ -2361,7 +2454,7 @@ namespace Oxide.Plugins
                     break;
 
                 case "debuglocation":
-                    if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+                    if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
                     {
                         ShowDebugLocationInfo(player);
                     }
@@ -2444,7 +2537,7 @@ namespace Oxide.Plugins
             sb.AppendLine("/mc top - View the leaderboard");
             sb.AppendLine("/mc help - Show this help message");
 
-            if (permission.UserHasPermission(player.UserIDString, "minicopterskillrace.admin"))
+            if (permission.UserHasPermission(player.UserIDString, "pilotpro.admin"))
             {
                 sb.AppendLine("/mc reset - Reset all player data (Admin only)");
                 sb.AppendLine("/mc removeplayer <name> - Remove specific player from leaderboard");
@@ -2640,7 +2733,7 @@ namespace Oxide.Plugins
             // Create flight info panel (center-left)
             elements.Add(new CuiPanel
             {
-                Image = { Color = "0 0 0 0" }, // Transparent background
+                Image = { Color = "0 0 0 0.5" }, // Transparent background
                 RectTransform = { AnchorMin = "0.35 0.30", AnchorMax = "0.51 0.50" } // Moved down
             }, "Hud", "MinicopterFlightInfo");
 
@@ -2661,16 +2754,32 @@ namespace Oxide.Plugins
                 streakMultiplier = GetStreakMultiplier(streakDuration);
             }
 
+            // Calculate height multiplier based on proximity to ground
+            float heightMultiplier = 1.0f;
+            if (distanceToGround <= config.MaxPointDistanceFromGround)
+            {
+                // Higher multiplier for lower altitude (more risk/skill)
+                // At 0m = 2.0x, at 10m = 1.0x
+                heightMultiplier = Mathf.Lerp(2.0f, 1.0f, distanceToGround / config.MaxPointDistanceFromGround);
+            }
+
             // Calculate total multiplier
-            float totalMultiplier = speedMultiplier * biomeMultiplier * streakMultiplier;
+            float totalMultiplier = speedMultiplier * biomeMultiplier * streakMultiplier * heightMultiplier;
 
             // Build clean flight info with location at bottom
             var flightInfo = $"<color={speedColor}>Speed: {speed:F1} m/s</color>\n";
             flightInfo += $"<color={groundColor}>Height: {distanceToGround:F1}m</color>\n";
             
+            // Show individual multipliers for debugging
+            flightInfo += $"<color=#ffffff>Speed: {speedMultiplier:F1}x</color>\n";
+            flightInfo += $"<color=#ffffff>Biome: {biomeMultiplier:F1}x</color>\n";
+            flightInfo += $"<color=#ffffff>Height: {heightMultiplier:F1}x</color>\n";
+            flightInfo += $"<color=#ffffff>Streak: {streakMultiplier:F1}x</color>\n";
+            flightInfo += $"<color=#ffffff>Active: {flightData.IsStreakActive}</color>\n";
+            
             // Total multiplier
             string totalColor = totalMultiplier >= 5.0f ? "#ff0099" : "#ffff00"; // Pink for very high, yellow for normal
-            flightInfo += $"<color={totalColor}>Multi: {totalMultiplier:F1}x</color>\n";
+            flightInfo += $"<color={totalColor}>Total: {totalMultiplier:F1}x</color>\n";
             flightInfo += $"<color={biomeColor}>{biomeName}</color>";
 
             // Add the flight info text
@@ -3710,10 +3819,12 @@ namespace Oxide.Plugins
 
         #region Point Display System
 
-        private void ShowFloatingPoints(BasePlayer player, float points, string type = "normal", string customMessage = null)
+        private void ShowFloatingPoints(BasePlayer player, float points, string type = "normal", string customMessage = null, bool? animateUp = null)
         {
             if (!config.PointDisplay.ShowPointChanges || player == null)
+            {
                 return;
+            }
 
             // Initialize player display list if needed
             if (!activePointDisplays.ContainsKey(player.userID))
@@ -3739,7 +3850,7 @@ namespace Oxide.Plugins
             string color = "1 1 1 1"; // Default white color
             string prefix = "";
             string text = "0"; // Default text
-            bool moveUp = false; // Direction of movement
+            bool moveUp = false; // Direction of movement (default)
             int fontSize = config.PointDisplay.FontSize; // Base font size
             
             if (type.ToLower() == "flip" || type.ToLower() == "backflip")
@@ -3918,6 +4029,12 @@ namespace Oxide.Plugins
                 fontSize = (int)(config.PointDisplay.FontSize * 0.75f); // Smaller for 0
             }
 
+            // Override animation direction if explicitly specified
+            if (animateUp.HasValue)
+            {
+                moveUp = animateUp.Value;
+            }
+
             // Generate random position in a circle around screen center
             float circleRadius = 0.15f; // Radius of the circle around center
             float randomAngle = UnityEngine.Random.Range(0f, 360f) * Mathf.Deg2Rad;
@@ -3930,6 +4047,10 @@ namespace Oxide.Plugins
             float height = 0.03f;
 
             // Create animated floating point display
+            if (type.ToLower() == "major_milestone" || type.ToLower() == "super_streak")
+            {
+                Puts($"[DEBUG] About to create animated display for {player?.displayName}: text='{text}', color='{color}', moveUp={moveUp}, fontSize={fontSize}");
+            }
             CreateAnimatedPointDisplay(player, displayId, text, color, startCenterX, startCenterY, width, height, moveUp, fontSize);
         }
 
@@ -3998,25 +4119,63 @@ namespace Oxide.Plugins
             // Only show if alpha is high enough to be visible
             if (alpha < 0.05f) return;
 
+            // Debug logging for milestone types (only log first frame to avoid spam)
+            if (text.Contains("STREAK") && alpha > 0.95f)
+            {
+                Puts($"[DEBUG] ShowPointFrame creating UI for {player?.displayName}: displayId={displayId}, text='{text}', alpha={alpha:F2}");
+            }
+
             // Destroy previous frame
             CuiHelper.DestroyUi(player, displayId);
 
             var elements = new CuiElementContainer();
 
-            // Create floating point display (text only, no background)
-            elements.Add(new CuiLabel
+            // Enhanced positioning for milestone UI - use animated position
+            if (text.Contains("STREAK"))
             {
-                Text = {
-                    Text = text,
-                    Color = color,
-                    FontSize = fontSize,
-                    Align = TextAnchor.MiddleCenter
-                },
-                RectTransform = {
-                    AnchorMin = $"{centerX - width/2} {centerY - height/2}",
-                    AnchorMax = $"{centerX + width/2} {centerY + height/2}"
-                }
-            }, "Hud", displayId);
+                // Use animated position for milestones - calculate proper anchors based on centerY
+                float actualWidth = 0.16f;  // 16% width for milestone text
+                float actualHeight = 0.04f; // 4% height for milestone text
+                
+                string anchorMin = $"{centerX - actualWidth/2} {centerY - actualHeight/2}";
+                string anchorMax = $"{centerX + actualWidth/2} {centerY + actualHeight/2}";
+                
+                // Create milestone display with animated positioning
+                elements.Add(new CuiLabel
+                {
+                    Text = {
+                        Text = text,
+                        Color = color,  // Use the original bright green color
+                        FontSize = fontSize,  // Use the original calculated font size
+                        Align = TextAnchor.MiddleCenter
+                    },
+                    RectTransform = {
+                        AnchorMin = anchorMin,
+                        AnchorMax = anchorMax
+                    }
+                }, "Overlay", displayId);
+            }
+            else
+            {
+                // Normal positioning for non-milestone UI using the original calculations
+                string anchorMin = $"{centerX - width/2} {centerY - height/2}";
+                string anchorMax = $"{centerX + width/2} {centerY + height/2}";
+
+                // Create normal floating point display
+                elements.Add(new CuiLabel
+                {
+                    Text = {
+                        Text = text,
+                        Color = color,
+                        FontSize = fontSize,
+                        Align = TextAnchor.MiddleCenter
+                    },
+                    RectTransform = {
+                        AnchorMin = anchorMin,
+                        AnchorMax = anchorMax
+                    }
+                }, "Overlay", displayId);
+            }
 
             CuiHelper.AddUi(player, elements);
         }
