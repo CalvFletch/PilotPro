@@ -448,6 +448,7 @@ namespace Oxide.Plugins
             
             // Milestone tracking for streak multiplier notifications
             public float LastMultiplierMilestone; // Track the last milestone reached to prevent spam
+            public float LastMilestoneNotificationTime; // Track when last milestone notification was shown
 
             // Minicopter tracking - allows streaks to persist when not in minicopter
             public bool IsInMinicopter; // Currently mounted in a minicopter
@@ -506,6 +507,7 @@ namespace Oxide.Plugins
                 
                 // Initialize milestone tracking
                 LastMultiplierMilestone = 1.0f;
+                LastMilestoneNotificationTime = 0f;
                 
                 // Initialize minicopter tracking
                 IsInMinicopter = true; // Player is initially in the minicopter when flight data is created
@@ -1072,6 +1074,17 @@ namespace Oxide.Plugins
                 DestroyGetLowCountdownUI(player, flightData);
                 DestroySpeedUpCountdownUI(player, flightData);
 
+                // Clean up any active floating point displays to prevent notifications after exit
+                if (activePointDisplays.ContainsKey(player.userID))
+                {
+                    var displays = activePointDisplays[player.userID];
+                    foreach (var displayId in displays)
+                    {
+                        CuiHelper.DestroyUi(player, displayId);
+                    }
+                    activePointDisplays[player.userID].Clear();
+                }
+
                 // Mark that player is no longer in a minicopter, but keep their flight data for streak continuity
                 flightData.IsInMinicopter = false;
                 flightData.CurrentMinicopter = null;
@@ -1246,6 +1259,18 @@ namespace Oxide.Plugins
 
         private void CheckMultiplierMilestones(PlayerFlightData flightData, float currentMultiplier)
         {
+            // Don't show milestone notifications if player is not in minicopter
+            if (!flightData.IsInMinicopter)
+            {
+                return;
+            }
+            
+            // Prevent milestone notification spam - at least 2 seconds between notifications
+            if (Time.time - flightData.LastMilestoneNotificationTime < 2f)
+            {
+                return;
+            }
+            
             // Use raw streak duration for display/logging only
             float rawStreakDuration = Time.time - flightData.StreakStartTime;
             float displayDuration = rawStreakDuration + config.StreakStartDurationThreshold; // For display/logging only
@@ -1254,6 +1279,7 @@ namespace Oxide.Plugins
             if (currentMultiplier >= 2.0f && flightData.LastMultiplierMilestone < 2.0f)
             {
                 flightData.LastMultiplierMilestone = 2.0f;
+                flightData.LastMilestoneNotificationTime = Time.time;
                 
                 // Show major milestone (no chat message, only floating points)
                 if (config.PointDisplay.ShowStreakPoints)
@@ -1266,6 +1292,7 @@ namespace Oxide.Plugins
             if (currentMultiplier >= 2.5f && flightData.LastMultiplierMilestone < 2.5f)
             {
                 flightData.LastMultiplierMilestone = 2.5f;
+                flightData.LastMilestoneNotificationTime = Time.time;
                 
                 // Show 2.5x milestone
                 if (config.PointDisplay.ShowStreakPoints)
@@ -1278,6 +1305,7 @@ namespace Oxide.Plugins
             if (currentMultiplier >= 3.0f && flightData.LastMultiplierMilestone < 3.0f)
             {
                 flightData.LastMultiplierMilestone = 3.0f;
+                flightData.LastMilestoneNotificationTime = Time.time;
                 
                 // Show super streak milestone (no chat message, only floating points)
                 if (config.PointDisplay.ShowStreakPoints)
@@ -1308,7 +1336,7 @@ namespace Oxide.Plugins
             // Create streak end UI panel (same position and style as persistent streak UI) - smaller background only
             elements.Add(new CuiPanel
             {
-                Image = { Color = "0 0 0 0.7" }, // Semi-transparent black background
+                Image = { Color = "0 0 0 0.8" }, // Semi-transparent black background
                 RectTransform = { AnchorMin = "0.35 0.12", AnchorMax = "0.65 0.20" } // Smaller panel to match active streak UI
             }, "Hud", elementId);
 
@@ -2730,11 +2758,11 @@ namespace Oxide.Plugins
             string biomeName = GetBiomeName(position);
             float speedMultiplier = Mathf.Max(1.0f, speed / config.SpeedMultiplierBase); // Ensure minimum 1.0x
 
-            // Create flight info panel (center-left)
+            // Create flight info panel (center-left) - much shorter
             elements.Add(new CuiPanel
             {
-                Image = { Color = "0 0 0 0.5" }, // Transparent background
-                RectTransform = { AnchorMin = "0.35 0.30", AnchorMax = "0.51 0.50" } // Moved down
+                Image = { Color = "0 0 0 0.8" }, // Transparent background
+                RectTransform = { AnchorMin = "0.35 0.35", AnchorMax = "0.42 0.435" } // Much shorter panel
             }, "Hud", "MinicopterFlightInfo");
 
             // Get speed color (higher speed = more green, slower = yellow)
@@ -2766,23 +2794,16 @@ namespace Oxide.Plugins
             // Calculate total multiplier
             float totalMultiplier = speedMultiplier * biomeMultiplier * streakMultiplier * heightMultiplier;
 
-            // Build clean flight info with location at bottom
-            var flightInfo = $"<color={speedColor}>Speed: {speed:F1} m/s</color>\n";
+            // Build clean flight info (without streak info)
+            var flightInfo = $"<color={biomeColor}>{biomeName}</color>\n";
+            flightInfo += $"<color={speedColor}>Speed: {speed:F1}m/s</color>\n";
             flightInfo += $"<color={groundColor}>Height: {distanceToGround:F1}m</color>\n";
-            
-            // Show individual multipliers for debugging
-            flightInfo += $"<color=#ffffff>Speed: {speedMultiplier:F1}x</color>\n";
-            flightInfo += $"<color=#ffffff>Biome: {biomeMultiplier:F1}x</color>\n";
-            flightInfo += $"<color=#ffffff>Height: {heightMultiplier:F1}x</color>\n";
-            flightInfo += $"<color=#ffffff>Streak: {streakMultiplier:F1}x</color>\n";
-            flightInfo += $"<color=#ffffff>Active: {flightData.IsStreakActive}</color>\n";
             
             // Total multiplier
             string totalColor = totalMultiplier >= 5.0f ? "#ff0099" : "#ffff00"; // Pink for very high, yellow for normal
-            flightInfo += $"<color={totalColor}>Total: {totalMultiplier:F1}x</color>\n";
-            flightInfo += $"<color={biomeColor}>{biomeName}</color>";
+            flightInfo += $"<color={totalColor}>Multi: {totalMultiplier:F1}x</color>";
 
-            // Add the flight info text
+            // Add the main flight info panel
             elements.Add(new CuiLabel
             {
                 Text = {
@@ -3038,11 +3059,11 @@ namespace Oxide.Plugins
             // Get color based on multiplier
             string streakColor = GetStreakMultiplierColor(currentStreakMultiplier);
 
-            // Create streak UI panel (bottom center, above hotbar) - smaller background only
+            // Create streak UI panel (below flight data panel)
             elements.Add(new CuiPanel
             {
                 Image = { Color = "0 0 0 0.7" }, // Semi-transparent black background
-                RectTransform = { AnchorMin = "0.35 0.12", AnchorMax = "0.65 0.20" } // Smaller panel
+                RectTransform = { AnchorMin = "0.35 0.25", AnchorMax = "0.42 0.3" } // Below flight data panel
             }, "Hud", elementId);
 
             // Format multiplier without trailing zeros
@@ -3056,26 +3077,19 @@ namespace Oxide.Plugins
                 multiplierText = $"{currentStreakMultiplier:F1}x"; // Show as 2.5x, 1.8x, etc.
             }
 
-            // Streak info text - show both display duration and current multiplier
-            string streakText = $"STREAK - {displayStreakDuration:F1}s | {multiplierText}\n";
-            if (currentStreakMultiplier >= 3.0f)
-            {
-                streakText += $"SUPER STREAK | Points: {flightData.StreakScoreTotal:F0}";
-            }
-            else
-            {
-                streakText += $"Points: {flightData.StreakScoreTotal:F0}";
-            }
+            // Streak info text - simplified format
+            string streakText = $"Streak: {displayStreakDuration:F0}s\n";
+            streakText += $"Points: {flightData.StreakScoreTotal:F0}";
 
             elements.Add(new CuiLabel
             {
                 Text = {
                     Text = streakText,
                     Color = streakColor,
-                    FontSize = 16,
-                    Align = TextAnchor.MiddleCenter
+                    FontSize = 12,
+                    Align = TextAnchor.UpperLeft
                 },
-                RectTransform = { AnchorMin = "0.02 0.1", AnchorMax = "0.98 0.9" }
+                RectTransform = { AnchorMin = "0.05 0.05", AnchorMax = "0.95 0.95" }
             }, elementId);
 
             CuiHelper.AddUi(player, elements);
@@ -4047,10 +4061,6 @@ namespace Oxide.Plugins
             float height = 0.03f;
 
             // Create animated floating point display
-            if (type.ToLower() == "major_milestone" || type.ToLower() == "super_streak")
-            {
-                Puts($"[DEBUG] About to create animated display for {player?.displayName}: text='{text}', color='{color}', moveUp={moveUp}, fontSize={fontSize}");
-            }
             CreateAnimatedPointDisplay(player, displayId, text, color, startCenterX, startCenterY, width, height, moveUp, fontSize);
         }
 
@@ -4118,12 +4128,6 @@ namespace Oxide.Plugins
         {
             // Only show if alpha is high enough to be visible
             if (alpha < 0.05f) return;
-
-            // Debug logging for milestone types (only log first frame to avoid spam)
-            if (text.Contains("STREAK") && alpha > 0.95f)
-            {
-                Puts($"[DEBUG] ShowPointFrame creating UI for {player?.displayName}: displayId={displayId}, text='{text}', alpha={alpha:F2}");
-            }
 
             // Destroy previous frame
             CuiHelper.DestroyUi(player, displayId);
