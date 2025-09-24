@@ -1,2 +1,0 @@
-- check the log file after each update
-- remeber you're wokring within the live servers plugin folder for live updates. so when you save a backup like C:\Users\CIsaa\Documents\Rust_Server\rust_server\oxide\plugins\MinicopterSkillRace_backup.cs it will get loaded as a pluging still, please ALWAYS use .backup or .bak instead

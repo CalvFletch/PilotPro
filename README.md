@@ -26,7 +26,7 @@ A comprehensive **Rust Oxide plugin** that transforms basic minicopter flight in
 
 ## 🎮 Installation
 
-1. Place `MinicopterSkillRace.cs` in your `oxide/plugins/` directory
+1. Place `PilotPro.cs` in your `oxide/plugins/` directory
 2. Reload plugins or restart server
 3. Configure settings via `/mc help` or config file
 
@@ -77,7 +77,7 @@ The plugin includes extensive configuration options:
 
 ### Project Structure
 ```
-MinicopterSkillRace.cs          # Main plugin file
+PilotPro.cs                     # Main plugin file
 .gitignore                      # Git ignore rules
 README.md                       # This file
 ```
