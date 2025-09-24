@@ -1,4 +1,4 @@
-# Minicopter Pro
+# PilotPro
 
 A comprehensive **Rust Oxide plugin** that transforms basic minicopter flight into a professional, skill-based racing experience with advanced scoring systems, streaks, zones, and visual feedback.
 

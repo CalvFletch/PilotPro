@@ -10,7 +10,7 @@ using Network;
 
 namespace Oxide.Plugins
 {
-    [Info("Minicopter Pro", "Calvin Fletcher", "1.0.0")]
+    [Info("PilotPro", "Calvin Fletcher", "1.0.0")]
     [Description("Professional minicopter racing with advanced scoring, streaks, and zones")]
     public class MinicopterSkillRace : RustPlugin
     {
@@ -2383,7 +2383,7 @@ namespace Oxide.Plugins
             if (storedData.Players.TryGetValue(steamId, out PlayerData playerData))
             {
                 var sb = new System.Text.StringBuilder();
-                sb.AppendLine("=== Your Minicopter Pro Stats ===");
+                sb.AppendLine("=== Your PilotPro Stats ===");
                 sb.AppendLine($"Total Score: {playerData.TotalScore:F0} points");
                 sb.AppendLine($"Highest Flight Score: {playerData.HighestScore:F0} points");
                 sb.AppendLine($"Best Streak Points: {playerData.BestStreakPoints:F0} points");
@@ -2419,7 +2419,7 @@ namespace Oxide.Plugins
         {
             var topPlayers = GetTopPlayers();
             var sb = new System.Text.StringBuilder();
-            sb.AppendLine("=== Minicopter Pro Leaderboard ===");
+            sb.AppendLine("=== PilotPro Leaderboard ===");
 
             int rank = 1;
             foreach (var playerData in topPlayers)
@@ -2439,7 +2439,7 @@ namespace Oxide.Plugins
         private void ShowHelp(BasePlayer player)
         {
             var sb = new System.Text.StringBuilder();
-            sb.AppendLine("=== Minicopter Pro Commands ===");
+            sb.AppendLine("=== PilotPro Commands ===");
             sb.AppendLine("/mc score - View your flight statistics");
             sb.AppendLine("/mc top - View the leaderboard");
             sb.AppendLine("/mc help - Show this help message");
@@ -2474,7 +2474,7 @@ namespace Oxide.Plugins
             activePlayers.Clear();
             SaveData();
             UpdateAllLeaderboards();
-            player.ChatMessage("All minicopter pro data has been reset.");
+            player.ChatMessage("All PilotPro data has been reset.");
             Log($"All data reset by {player.displayName} ({player.UserIDString})");
         }
 
