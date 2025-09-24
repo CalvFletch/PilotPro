@@ -1,0 +1,38 @@
+.btn-info {
+    background-color: #36c0e9;
+    border-color: #36c0e9;
+}
+
+.forum .post-content.active, .forum .post-footer.active {
+    background-color: #e0c190;
+}
+
+.forum blockquote {
+    background-color: #f6f6f6;
+}
+
+.table-of-contents > ol > li a,
+.table-of-contents > ul > li a {
+    color: #111;
+}
+
+.table-of-contents > ol > li > ol > li:before,
+.table-of-contents > ul > li > ul > li:before {
+    color: #111;
+}
+
+.documentation pre {
+    background: #f5f2f0;
+}
+
+.selectize-dropdown {
+    background-color: rgba(255, 255, 255, 1) !important;
+}
+
+.dropdown-menu > li > a {
+    color: black !important;
+}
+
+a.list-group-item.active {
+    background-color: #DDD;
+}

@@ -1,0 +1,687 @@
+// COPYRIGHT umod.org 2020
+var tether = {
+    debug: false,
+    _urls: {},
+    _byValueMethodNames: [
+        '_dataBind',
+        '_valueBind',
+        '_attrBind',
+        '_colorBind',
+        '_classBind',
+        '_visibilityBind',
+        '_invisibilityBind',
+        '_badgeBind',
+        '_listBind',
+        '_timeagoBind',
+    ],
+    _byObjectMethodNames: [
+        '_pageBind',
+        '_listBind'
+    ],
+    _currentOptions: {},
+    _currentRequests: {},
+    _lastResults: {},
+    _lastParsedResults: {},
+    _processingNamespace: '',
+    exists: function(namespace) {
+        return tether._urls.hasOwnProperty(namespace);
+    },
+    getData: function(namespace) {
+        if(tether._currentOptions.hasOwnProperty(namespace) && tether._currentOptions[namespace].hasOwnProperty("data")) {
+            return tether._currentOptions[namespace].data;
+        }
+
+        return {};
+    },
+    reload: function(namespace, options) {
+        if(typeof options === 'undefined') {
+            options = {};
+        }
+
+        if(tether._currentOptions.hasOwnProperty(namespace)) {
+            if(options.hasOwnProperty('data') && tether._currentOptions[namespace].hasOwnProperty('reset')) {
+                for(var i = 0; i < tether._currentOptions[namespace].reset.length; i++) {
+                    if(options.data.hasOwnProperty(tether._currentOptions[namespace].reset[i])) {
+                        tether._currentOptions[namespace].data[tether._currentOptions[namespace].reset[i]] = {};
+                    }
+                }
+            }
+
+            options = $.extend(true, tether._currentOptions[namespace], options);
+        }
+
+        if(typeof options.url !== typeof undefined) {
+            tether._register(namespace, options.url, options.selector);
+        }
+
+        if(tether._urls.hasOwnProperty(namespace)) {
+            var namespaceObject = tether._urls[namespace];
+
+            if(typeof options.selector === "undefined") {
+                for(var index in namespaceObject) {
+                    return tether.load(namespace, namespaceObject[index].url, options);
+                }
+            } else {
+                for(var index in namespaceObject) {
+                    if(namespaceObject[index].selector === options.selector) {
+                        return tether.load(namespace, namespaceObject[index].url, options);
+                    }
+                }
+            }
+        } else {
+            console.log('tether: no namespace ' + namespace);
+        }
+
+        return $.when();
+    },
+    redraw: function(namespace, options, useNewData) {
+        if(typeof options === 'undefined') {
+            if(tether._currentOptions.hasOwnProperty(namespace)) {
+                options = $.extend(true, tether._currentOptions[namespace])
+            } else {
+                options = {}
+            }
+        }
+
+        if(typeof useNewData === 'undefined') {
+            useNewData = false;
+        }
+
+        tether._processingNamespace = namespace;
+        var isJson = false;
+        var object = null;
+        var msg = tether._lastResults[namespace];
+
+        if(useNewData) {
+            if(typeof msg === 'object') {
+                isJson = true;
+                object = msg;
+            } else {
+                try {
+                    object = JSON.parse(msg);
+                    isJson = true;
+                } catch(e) {
+                    isJson = false;
+                }
+            }
+        } else {
+            isJson = true;
+            object = tether._lastParsedResults[namespace];
+        }
+
+        if(typeof options.selector !== typeof undefined && options.selector.length > 0 && options.selector !== '*') {
+            var element = tether._getElements(options.selector, 'visibility-bind', null, options);
+            if(element.length > 0) {
+                element.hide();
+            }
+        }
+
+        if(isJson && typeof object === 'object') {
+            tether._bindProperties(object, namespace, options);
+        } else {
+            tether._dataBind(options.selector, namespace, msg);
+        }
+
+        $(document).trigger('tether:draw:'+namespace, object);
+
+        return object;
+    },
+    abort: function(namespace) {
+        if(namespace in tether._currentRequests) {
+            tether._currentRequests[namespace].abort();
+        }
+    },
+    load: function(namespace, url, options) {
+        if(typeof options === 'undefined') {
+            options = {};
+        }
+
+        if(typeof options.data === 'undefined') {
+            options.data = {};
+        }
+
+        if(typeof options.selector === "undefined") {
+            options.selector = '*';
+        }
+
+        if(options.selector.length === 0) {
+            options.selector = '*';
+        }
+
+        tether._register(namespace, url, options.selector);
+
+        options.namespace = namespace;
+
+        if(!tether._currentOptions.hasOwnProperty(namespace)) {
+            tether._currentOptions[namespace] = options;
+        }
+
+        if(typeof options.delay == typeof undefined) {
+            options.delay = false;
+        }
+
+        if(options.delay !== true) {
+            tether.abort(namespace);
+            return $.when(tether._currentRequests[namespace] = $.ajax(url, {
+                data: options.data,
+                xhrFields: {
+                   withCredentials: true
+                }
+            }).done(function(msg) {
+                tether._lastResults[namespace] = msg;
+                var object = tether.redraw(namespace, options, true);
+                tether._lastParsedResults[namespace] = object;
+                $(document).trigger('tether:'+namespace, object);
+            }).fail(function(xhr, textStatus, errorThrown)
+            {
+                if(xhr.status === 429)
+                {
+                    if(typeof options.throttler_template !== typeof undefined && typeof options.throttler_target !== typeof undefined) {
+                        var throttler_tpl = null;
+                        if($(options.throttler_template).length > 0) {
+                            throttler_tpl = $($(options.throttler_template).html());
+                        } else {
+                            throttler_tpl = $('<span>Please wait..</span>');
+                        }
+
+                        var throttler_target = $(options.throttler_target);
+                        if(throttler_target.length > 0) {
+                            throttler_target.html(throttler_tpl);
+                        }
+                    }
+
+                    $(document).trigger('tether:throttled:'+namespace, tether._currentRequests[namespace]);
+                }
+                else
+                {
+                    if(typeof options.error_target !== typeof undefined)
+                    {
+                        var error_tpl = null;
+                        if(typeof options.error_template !== typeof undefined && $(options.error_template).length > 0) {
+                            error_tpl = $($(options.error_template).html());
+                        } else {
+                            error_tpl = $('<span>Oops, something went wrong..</span>');
+                        }
+
+                        var error_target = $(options.error_target);
+                        if(error_target.length > 0) {
+                            error_target.html(error_tpl);
+                        }
+                    }
+
+                    $(document).trigger('tether:error:'+namespace, tether._currentRequests[namespace]);
+                }
+            }));
+        }
+    },
+    _register: function(namespace, url, selector) {
+        if(!tether._urls.hasOwnProperty(namespace)) {
+            tether._urls[namespace] = [];
+        }
+
+        tether._urls[namespace].push({
+            selector: selector,
+            url: url
+        });
+    },
+    _bindProperties: function(object, namespace, options) {
+        if(tether.debug) {
+            var start = new Date().getTime();
+            var counter = 0;
+            var missed = 0;
+        }
+
+        for(var index in tether._byObjectMethodNames) {
+            var method = tether._byObjectMethodNames[index];
+            if(tether[method](options.selector, namespace, object, options)) {
+                if(tether.debug) {
+                    counter++;
+                    //console.log('tether: ' + method + ' bind (' + namespace + ')');
+                }
+                break;
+            } else if(tether.debug) {
+                missed++;
+            }
+        }
+
+        for (var property in object) {
+            var name = namespace+'-'+property;
+            var val = object[property];
+
+            if(tether.debug) {
+                //console.log('tether: binding ' + options.selector + " " + name);
+            }
+
+            if(typeof val === "object") {
+                if(!tether._listBind(options.selector, name, val, options)) {
+                    tether._bindProperties(val, name, options);
+                    if(tether.debug) {
+                        counter++;
+                        console.log('tether: ' + method + ' rebind (' + name + ')');
+                    }
+                } else if(tether.debug) {
+                    missed++;
+                }
+            }
+
+            for(var index in tether._byValueMethodNames) {
+                var method = tether._byValueMethodNames[index];
+                if(tether[method](options.selector, name, val, options)) {
+                    if(tether.debug) {
+                        counter++;
+                        //console.log('tether: ' + method + ' bind (' + name + ')');
+                    }
+                    //break;
+                } else if(tether.debug) {
+                    missed++;
+                }
+            }
+        }
+
+        if(tether.debug) {
+            var end = new Date().getTime();
+            var time = end - start;
+            console.log('Execution time (' + namespace + ') :' + time);
+        }
+    },
+    _chunk: function (arr, len) {
+        var chunks = [],
+            i = 0,
+            n = arr.length;
+
+        while (i < n) {
+            chunks.push(arr.slice(i, i += len));
+        }
+
+        return chunks;
+    },
+    _uniqid: function(a){
+        if(typeof a === 'undefined') {
+            a = '';
+        }
+        var c = Date.now()/1000;
+        var d = c.toString(16).split(".").join("");
+        while(d.length < 14){
+            d += "0";
+        }
+        var e = "";
+            var f = Math.round(Math.random()*100000000);
+            e += f;
+        return a + d + e;
+    },
+    _listBind: function(selector, name, value, options) {
+        if(value == null) {
+            return false;
+        }
+        //var element = $(selector+' *[list-bind="'+name+'"], '+selector+'[list-bind="'+name+'"]');
+        var element = tether._getElements(selector, 'list-bind', name, options);
+        if(typeof element !== "undefined" && element.length > 0) {
+            var chunks = tether._chunk(value, value.length / element.length);
+
+            var max = 0;
+            if(chunks.length > 0) {
+                max = chunks[0].length;
+            }
+            var x = 0;
+            //var options = tether._currentOptions[tether._processingNamespace];
+            if(typeof options.listElement === "undefined") {
+                options.listElement = 'li';
+            }
+
+            if(typeof options.listElementClass === "undefined") {
+                options.listElementClass = '';
+            }
+
+            for(var e = 0; e < element.length; e++) {
+                var me = $(element[e]);
+                var tpl = null;
+                var empty_tpl = null;
+                var list_template = me.attr('list-template');
+                var empty_template = me.attr('empty-template');
+                var list_element_class = options.listElementClass;
+                var list_element_class_attr = me.attr('list-element-class');
+                if(typeof list_element_class_attr !== typeof undefined && list_element_class_attr !== false)
+                {
+                    list_element_class = list_element_class_attr;
+                }
+
+                if(typeof list_template !== typeof undefined && list_template !== false) {
+                    if($('#'+list_template).length > 0) {
+                        tpl = $($('#'+list_template).html());
+                    }
+                }
+
+                if(typeof empty_template !== typeof undefined && empty_template !== false) {
+                    if($('#'+empty_template).length > 0) {
+                        empty_tpl = $($('#'+empty_template).html());
+                    } else {
+                        empty_tpl = $('<span>No results</span>');
+                    }
+                } else {
+                    empty_tpl = $('<span>No results</span>');
+                }
+
+                if(tpl === null) {
+                    var original_tpl = me.data('tpl');
+
+                    if(typeof original_tpl === "undefined") {
+                        tpl = me.find(options.listElement + ':first');
+                        if(tpl.length === 0) {
+                            tpl = $(document.createElement(options.listElement));
+                        }
+                        me.data('tpl', tpl);
+                    } else {
+                        tpl = original_tpl;
+                    }
+                }
+
+                me.html('');
+
+                if(chunks.length === 0) {
+                    me.html(empty_tpl);
+                } else {
+                    var z = 0;
+
+                    for(var x = 0; x <= chunks.length; x++) {
+                        var chunk = chunks[x];
+                        for(var i in chunk) {
+                            var val = chunk[i];
+                            var li = tpl.clone();
+                            var id = tether._uniqid();
+                            li.attr('id', id);
+                            li.addClass(list_element_class);
+                            me.append(li);
+                            if(typeof val === 'object') {
+                                var suboptions = $.extend(true, {}, options, {
+                                    selector:'#'+id,
+                                    element: li
+                                });
+                                tether._bindProperties(val, name, suboptions);
+                            } else {
+                                li.html(val);
+                            }
+
+                            if(z >= max) {
+                                break;
+                            }
+                        }
+
+                        z++;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        return false;
+    },
+    _dataBind: function(selector, name, value, options) {
+        //var element = $(selector+' *[data-bind="'+name+'"], '+selector+'[data-bind="'+name+'"]');
+        var element = tether._getElements(selector, 'data-bind', name, options);
+        if(element.length > 0) {
+            element.html(value);
+            return true;
+        }
+
+        return false;
+    },
+    _valueBind: function(selector, name, value, options) {
+        //var element = $(selector+' *[value-bind="'+name+'"], '+selector+'[value-bind="'+name+'"]');
+        var element = tether._getElements(selector, 'value-bind', name, options);
+        if(element.length > 0) {
+            element.val(value);
+            return true;
+        }
+
+        return false;
+    },
+    _colorBind: function(selector, name, value, options) {
+        //var element = $(selector+' *[color-bind="'+name+'"], '+selector+'[color-bind="'+name+'"]');
+        var element = tether._getElements(selector, 'color-bind', name, options);
+        if(element.length > 0) {
+            element.css('color', value);
+            return true;
+        }
+
+        return false;
+    },
+    _classBind: function(selector, name, value, options) {
+        //var element = $(selector+' *[class-bind="'+name+'"], '+selector+'[class-bind="'+name+'"]');
+        var element = tether._getElements(selector, 'class-bind', name, options);
+        if(element.length > 0) {
+            var original_class = element.data('original-class');
+            if(typeof original_class === 'undefined') {
+                element.data('original-class', element.attr('class'));
+            } else {
+                element.attr('class', element.data('original-class'));
+            }
+
+            element.addClass(value);
+            return true;
+        }
+
+        return false;
+    },
+    _attrBind: function(selector, name, value, options) {
+        //var element = $(selector+' *[attr-bind="'+name+'"], '+selector+'[attr-bind="'+name+'"]');
+        var element = tether._getElements(selector, 'attr-bind', name, options);
+        if(value !== null && element.length > 0) {
+            element.each(function() {
+                var $this = $(this);
+
+                var bindTo = $this.attr('attr-bind-to');
+                var bindPrefix = $this.attr('attr-bind-prefix');
+                var bindPostfix = $this.attr('attr-bind-postfix');
+
+                if(typeof bindPrefix !== typeof undefined && bindPrefix !== false) {
+                    value = bindPrefix + value;
+                }
+
+                if(typeof bindPostfix !== typeof undefined && bindPostfix !== false) {
+                    value = value + bindPostfix;
+                }
+
+                $this.attr(bindTo, value);
+            });
+
+            return true;
+        }
+
+        return false;
+    },
+    _timeagoBind: function(selector, name, value, options) {
+        //var element = $(selector+' *[attr-bind="'+name+'"], '+selector+'[attr-bind="'+name+'"]');
+        var element = tether._getElements(selector, 'timeago-bind', name, options);
+        if(element.length > 0) {
+            element.attr('datetime', value);
+            element.timeago();
+            element.timeago("update", value);
+
+            return true;
+        }
+
+        return false;
+    },
+    _visibilityBind: function(selector, name, value, options) {
+        //var element = $(selector+' *[visibility-bind="'+name+'"], '+selector+'[visibility-bind="'+name+'"]');
+        var element = tether._getElements(selector, 'visibility-bind', name, options);
+        if(element.length > 0) {
+            if(typeof value === typeof undefined) {
+                element.hide();
+            } else {
+                if(value === false || value === '' || value === 0 || value === null) {
+                    element.hide();
+                } else {
+                    element.show();
+                }
+            }
+            return true;
+        }
+
+        return false;
+    },
+    _invisibilityBind: function(selector, name, value, options) {
+        //var element = $(selector+' *[invisibility-bind="'+name+'"], '+selector+'[invisibility-bind="'+name+'"]');
+        var element = tether._getElements(selector, 'invisibility-bind', name, options);
+        if(element.length > 0) {
+            if(value === false || value === '' || value === 0 || value === null || typeof value === typeof undefined) {
+                element.show();
+            } else {
+                element.hide();
+            }
+            return true;
+        }
+
+        return false;
+    },
+    _badgeBind: function(selector, name, value, options) {
+        var element = tether._getElements(selector, 'badge-bind', name, options);
+        if(element.length > 0) {
+            var badges;
+            if(value.indexOf(',') > -1) {
+                badges = value.split(',');
+            } else {
+                badges = [];
+                badges.push(value);
+            }
+
+            //var options = tether._currentOptions[tether._processingNamespace];
+            if(typeof options.badgeClass === "undefined") {
+                options.badgeClass = '';
+            }
+
+            element.html('');
+
+            for(var i in badges) {
+                var badge_item = $(document.createElement('span'));
+                badge_item.addClass('badge').addClass(options.badgeClass);
+                badge_item.html(badges[i]);
+                element.append(badge_item);
+            }
+            return true;
+        }
+
+        return false;
+    },
+    _pageBind: function(selector, name, object, options) {
+        var element = tether._getElements(selector, 'page-bind', name, options);
+        if(element.length > 0) {
+            var start_page = object.current_page - 5;
+            var end_page = object.current_page + 5;
+            var prev_page = object.current_page - 1;
+            var next_page = object.current_page + 1;
+
+            if(start_page < 1) {
+                start_page = 1;
+            }
+
+            if(end_page > object.last_page) {
+                end_page = object.last_page;
+            }
+
+            var page_buttons = [];
+
+            var page_button = $(document.createElement('li'));
+            page_button.addClass('page-item');
+            if(1 === object.current_page) {
+                page_button.addClass('disabled');
+            }
+
+            page_button.append('<a class="page-link" data-page="1"><i class="fa fa-angle-double-left"></i></a>')
+            page_buttons.push(page_button);
+
+            page_button = $(document.createElement('li'));
+            page_button.addClass('page-item');
+            if(1 === object.current_page) {
+                page_button.addClass('disabled');
+            }
+
+            page_button.append('<a class="page-link" data-page="'+prev_page+'"><i class="fa fa-angle-left"></i></a>')
+            page_buttons.push(page_button);
+
+            for(var i = start_page; i <= end_page; i++) {
+                page_button = $(document.createElement('li'));
+                page_button.addClass('page-item');
+                if(i === object.current_page) {
+                    page_button.addClass('active');
+                }
+
+                page_button.append('<a class="page-link" data-page="'+i+'">'+i+'</a>')
+                page_buttons.push(page_button);
+            }
+
+            page_button = $(document.createElement('li'));
+            page_button.addClass('page-item');
+            if(object.last_page === object.current_page) {
+                page_button.addClass('disabled');
+            }
+
+            page_button.append('<a class="page-link" data-page="'+next_page+'"><i class="fa fa-angle-right"></i></a>')
+            page_buttons.push(page_button);
+
+            page_button = $(document.createElement('li'));
+            page_button.addClass('page-item');
+            if(object.last_page === object.current_page) {
+                page_button.addClass('disabled');
+            }
+
+            page_button.append('<a class="page-link" data-page="'+object.last_page+'"><i class="fa fa-angle-double-right"></i></a>')
+            page_buttons.push(page_button);
+
+            element.html('');
+            for(var i in page_buttons) {
+                element.append(page_buttons[i]);
+            }
+
+            return true;
+        }
+
+        return false;
+    },
+    _encodeQueryData: function(data) {
+        var ret = [];
+        for (var d in data)
+          ret.push(encodeURIComponent(d) + '=' + encodeURIComponent(data[d]));
+        return ret.join('&');
+    },
+    _merge_options: function(obj1,obj2){
+        var obj3 = {};
+        for (var attrname in obj1) { obj3[attrname] = obj1[attrname]; }
+        for (var attrname in obj2) { obj3[attrname] = obj2[attrname]; }
+        return obj3;
+    },
+    _getElements: function(selector, property, name, options) {
+
+
+        if(name === null) {
+            if(typeof options !== typeof undefined && typeof options.element !== typeof undefined) {
+                var attr = options.element.attr(property);
+                if(typeof attr !== typeof undefined && attr !== false) {
+                    return options.element;
+                }
+                return options.element.find('*['+property+']')
+            }
+            return $(selector+' *['+property+'], '+selector+'['+property+']')
+        }
+
+        if(typeof options !== typeof undefined && typeof options.element !== typeof undefined) {
+            var extraName = null;
+            if(name.indexOf(options.namespace+"-") === 0) {
+                extraName = name.substring(options.namespace.length + 1);
+            }
+
+            var attr = options.element.attr(property);
+            if(typeof attr !== typeof undefined && attr !== false && attr === name) {
+                return options.element;
+            }
+
+            if(extraName === null) {
+                return options.element.find('*['+property+'="'+name+'"]');
+            }
+
+            return options.element.find('*['+property+'="'+name+'"], *['+property+'="'+extraName+'"]');
+        }
+        return $(selector+' *['+property+'="'+name+'"], '+selector+'['+property+'="'+name+'"]');
+    }
+};
